@@ -60,7 +60,7 @@ def sample_mixing_neg(pos_idx, target):
 				break
 	return torch.LongTensor(rand_idx_neg)
 
-def train(args, model, train_loader, optimizer, criterion, epoch):
+def train(args, model, train_loader, optimizer, criterion, mamba_flag , crossmodal, epoch):
 	model.train()
 	
 
@@ -80,7 +80,7 @@ def train(args, model, train_loader, optimizer, criterion, epoch):
 		rand_idx = sample_mixing_neg(sample_idx, target)
 
 
-		
+		args.augment = 1
 		if args.augment:
 			audio = torch.cat((audio,audio[sample_idx]), dim=0)
 			video = torch.cat((video,video[rand_idx]), dim=0)
@@ -91,7 +91,7 @@ def train(args, model, train_loader, optimizer, criterion, epoch):
 			v_refine_aug = torch.cat((v_refine, v_refine[rand_idx]), dim=0)
 
 
-			output, a_prob, v_prob, all_prob, sims = model(audio, video, video_st, args,
+			output, a_prob, v_prob, all_prob, sims = model(audio, video, video_st, args, args.mamba_flag , args.crossmodal, 
 			a_refine=a_refine_aug, v_refine=v_refine_aug, rand_idx=rand_idx, sample_idx=sample_idx, target=target)
 
 
@@ -153,7 +153,7 @@ def train(args, model, train_loader, optimizer, criterion, epoch):
 					   100. * batch_idx / len(train_loader), loss.item(), loss_a.item(), loss_v.item(), loss_mil.item(),
 					  loss_cm.item())) #
 
-def eval(model, val_loader, set, args):
+def eval(model, val_loader, set, args, mamba_flag , crossmodal,):
 	categories = ['Speech', 'Car', 'Cheering', 'Dog', 'Cat', 'Frying_(food)',
 				  'Basketball_bounce', 'Fire_alarm', 'Chainsaw', 'Cello', 'Banjo',
 				  'Singing', 'Chicken_rooster', 'Violin_fiddle', 'Vacuum_cleaner',
@@ -221,7 +221,7 @@ def eval(model, val_loader, set, args):
 	with torch.no_grad():
 		for batch_idx, sample in enumerate(val_loader):
 			audio, video, video_st, target = sample['audio'].to('cuda'), sample['video_s'].to('cuda'),sample['video_st'].to('cuda'), sample['label'].to('cuda')
-			output, a_prob, v_prob, frame_prob, (x1,x2) = model(audio, video, video_st, args)
+			output, a_prob, v_prob, frame_prob, (x1,x2) = model(audio, video, video_st, args, args.mamba_flag , args.crossmodal, )
 
 			### for tsne
 			total_audio.append(x1)
@@ -430,7 +430,8 @@ def main():
 		wandb.init(config=args, project="avvp")
 
 	if args.model == 'MMIL_Net':
-		model = MMIL_Net(args).to('cuda')
+		print('main - args.mamba_flag ', args.mamba_flag)
+		model = MMIL_Net(args, mamba_flag=args.mamba_flag, crossmodal=args.crossmodal).to('cuda')
 	else:
 		raise ('not recognized')
 
@@ -454,9 +455,10 @@ def main():
 		best_F = 0
 		count = 0
 		for epoch in range(1, args.epochs + 1):
-			train(args, model, train_loader, optimizer, criterion, epoch=epoch)
+
+			train(args, model, train_loader, optimizer, criterion, args.mamba_flag , args.crossmodal, epoch=epoch)
 			scheduler.step()
-			F_seg, F_event, f_a, f_v, f_av  = eval(model, val_loader, args.label_test, args)
+			F_seg, F_event, f_a, f_v, f_av  = eval(model, val_loader, args.label_test, args, args.mamba_flag , args.crossmodal,)
 			count +=1
 
 			if  F_event >= best_F:
@@ -478,7 +480,7 @@ def main():
 											   ToTensor()]))
 		test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
 		model.load_state_dict(torch.load(args.model_save_dir + args.checkpoint + ".pt"))
-		eval(model, test_loader, args.label_test, args)
+		eval(model, test_loader, args.label_test, args, args.mamba_flag , args.crossmodal,)
 if __name__ == '__main__':
 	main()
 

@@ -15,6 +15,10 @@ np.random.seed(0)
 torch.cuda.manual_seed(0)
 torch.cuda.manual_seed_all(0)
 
+import sys
+sys.path.append('/home/jxl220096/code/ai_assignment')
+from mamba.mamba_ssm.modules.mamba_simple import Mamba
+
 def _get_clones(module, N):
 	return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -43,6 +47,36 @@ class Encoder(nn.Module):
 			output_v = self.norm2(output_v)
 
 		return output_a, output_v
+
+class HAN_Encoder(nn.Module):
+
+	def __init__(self, encoder_layer, num_layers, mamba_flag = 'None', crossmodal = 'None', norm=None):
+		super(HAN_Encoder, self).__init__()
+		self.layers = _get_clones(encoder_layer, num_layers)
+		self.num_layers = num_layers
+		self.norm1 = nn.LayerNorm(512)
+		self.norm2 = nn.LayerNorm(512)
+		self.norm = norm
+
+		self.crossmodal = crossmodal
+		self.mamba_flag = mamba_flag
+
+	def forward(self, src_a, src_v, mask=None, src_key_padding_mask=None):
+		output_a = src_a
+		output_v = src_v
+
+		for i in range(self.num_layers):
+			output_a = self.layers[i](src_a, src_v,  src_mask=mask, 
+									src_key_padding_mask=src_key_padding_mask)  #  mamba_flag, crossmodal,
+			output_v = self.layers[i](src_v, src_a,  src_mask=mask,
+										src_key_padding_mask=src_key_padding_mask)
+
+		if self.norm:
+			output_a = self.norm1(output_a)
+			output_v = self.norm2(output_v)
+
+		return output_a, output_v
+
 
 class HANLayer(nn.Module):
 
@@ -90,10 +124,87 @@ class HANLayer(nn.Module):
 		return src_q.permute(1, 0, 2)
 
 
+class HAN_Mamba_Layer(nn.Module):
+
+	def __init__(self, d_model, nhead, dim_feedforward=512, dropout=0.1, mamba_flag = 'None', crossmodal = 'None'):
+		super(HAN_Mamba_Layer, self).__init__()
+		self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+		self.cm_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+
+		# Implementation of Feedforward model
+		self.linear1 = nn.Linear(d_model, dim_feedforward)
+		self.dropout = nn.Dropout(dropout)
+		self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+		self.norm1 = nn.LayerNorm(d_model)
+		self.norm2 = nn.LayerNorm(d_model)
+		self.dropout11 = nn.Dropout(dropout)
+		self.dropout12 = nn.Dropout(dropout)
+		self.dropout2 = nn.Dropout(dropout)
+
+		self.activation = nn.ReLU()
+
+		self.crossmodal = crossmodal
+		self.mamba_flag = mamba_flag
+
+		# Add mamba layer
+		if self.mamba_flag != 'None':
+			mamba_params = {'d_model_a': 512, 'd_model_v': 512, 'd_state': 16, 'd_conv': 4, 'expand': 2, 'layer_idx': 0}
+			self.mamba = HAN_Encoder(Mamba(**mamba_params, crossmodal=self.crossmodal), \
+				mamba_flag=self.mamba_flag, crossmodal=self.crossmodal, num_layers=10)
+
+	def forward(self, src_q, src_v, src_mask=None, src_key_padding_mask=None):
+		"""Pass the input through the encoder layer.
+
+		Args:
+			src: the sequnce to the encoder layer (required).
+			src_mask: the mask for the src sequence (optional).
+			src_key_padding_mask: the mask for the src keys per batch (optional).
+
+		Shape:
+			see the docs in Transformer class.
+		"""
+		src_q = src_q.permute(1, 0, 2)
+		src_v = src_v.permute(1, 0, 2)
+
+
+		if self.mamba_flag == 'None':
+			# ----------- original --------------
+			src1 = self.cm_attn(src_q, src_v, src_v, attn_mask=src_mask,
+									key_padding_mask=src_key_padding_mask)[0]
+			src2 = self.self_attn(src_q, src_q, src_q, attn_mask=src_mask,
+									key_padding_mask=src_key_padding_mask)[0]
+
+		if self.mamba_flag == 'han cmatt to mamba': 
+			# ----------- change cm_attn to mamba --------------
+			src1, _ = self.mamba(src_q, src_v, self.crossmodal)[0]      
+			src2 = self.self_attn(src_q, src_q, src_q, attn_mask=src_mask,
+								key_padding_mask=src_key_padding_mask)[0]
+
+		if self.mamba_flag == 'han selfatt to mamba': 
+			# ----------- change self_attn to mamba --------------
+			src1 = self.cm_attn(src_q, src_v, src_v, attn_mask=src_mask,
+								key_padding_mask=src_key_padding_mask)[0]  
+			src2, _ = self.mamba(src_q, src_q, self.crossmodal)[0]
+
+		src_q = src_q + self.dropout11(src1) + self.dropout12(src2)
+		src_q = self.norm1(src_q)
+
+		src2 = self.linear2(self.dropout(F.relu(self.linear1(src_q))))
+		src_q = src_q + self.dropout2(src2)
+		src_q = self.norm2(src_q)
+		return src_q.permute(1, 0, 2)
+
+
 class MMIL_Net(nn.Module):
 
-	def __init__(self, opt):
+	def __init__(self, opt, mamba_flag='None', crossmodal='None'):
 		super(MMIL_Net, self).__init__()
+
+		self.mamba_flag = mamba_flag
+		self.crossmodal = crossmodal
+
+		print('MMIL - self.mamba_flag', self.mamba_flag)
 
 		self.fc_prob = nn.Linear(512, 25)
 		self.fc_frame_att = nn.Linear(512, 25)
@@ -130,8 +241,10 @@ class MMIL_Net(nn.Module):
 		self.fc_occ_modality_prob = nn.Linear(opt.occ_dim, 1)
 
 
-		self.hat_encoder = Encoder(HANLayer(d_model=512, nhead=1, dim_feedforward=opt.forward_dim, dropout=opt.prob_drop), num_layers=1)
+		# self.hat_encoder = Encoder(HANLayer(d_model=512, nhead=1, dim_feedforward=opt.forward_dim, dropout=opt.prob_drop), num_layers=1)
 
+		self.han_layer = HAN_Mamba_Layer(d_model=512, nhead=1, dim_feedforward=512, mamba_flag=self.mamba_flag, crossmodal=self.crossmodal)
+		self.hat_encoder = HAN_Encoder(self.han_layer, mamba_flag=self.mamba_flag, crossmodal=self.crossmodal, num_layers=1)
 
 		self.av_class_encoder = Encoder(HANLayer(d_model=opt.occ_dim, nhead=1, dim_feedforward=opt.occ_dim, dropout=opt.prob_drop_occ), num_layers=1)
 
@@ -166,7 +279,7 @@ class MMIL_Net(nn.Module):
 
 		return res_av
 
-	def forward(self, audio, visual, visual_st, opt, a_refine=None,v_refine=None, rand_idx=None, sample_idx=None, label=None, target=None):
+	def forward(self, audio, visual, visual_st, opt, mamba_flag, mamba, a_refine=None,v_refine=None, rand_idx=None, sample_idx=None, label=None, target=None):
 
 		x1_audio = self.fc_a(audio)
 
@@ -176,8 +289,6 @@ class MMIL_Net(nn.Module):
 		vid_st = self.fc_st(visual_st)
 		x2 = torch.cat((vid_s, vid_st), dim =-1)
 		x2_visual = self.fc_fusion(x2)
-
-		
 		x1,x2 = self.hat_encoder(x1_audio, x2_visual)
 
 		

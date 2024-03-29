@@ -18,12 +18,12 @@ class BaseOptions():
 
 	def initialize(self):
 		self.parser.add_argument(
-			"--audio_dir", type=str, default='data/feats/vggish/', help="audio dir")
+			"--audio_dir", type=str, default='/home/jxl220096/data/llp/feats/vggish/', help="audio dir")
 		self.parser.add_argument(
-			"--video_dir", type=str, default='data/feats/res152/',
+			"--video_dir", type=str, default='/home/jxl220096/data/llp/feats/res152/',
 			help="video dir")
 		self.parser.add_argument(
-			"--st_dir", type=str, default='data/feats/r2plus1d_18/',
+			"--st_dir", type=str, default='/home/jxl220096/data/llp/feats/r2plus1d_18/',
 			help="video dir")
 		self.parser.add_argument(
 			"--label_train", type=str, default="data/AVVP_train.csv", help="weak train csv file")
@@ -157,6 +157,13 @@ class BaseOptions():
 
 		self.parser.add_argument(	
 			'--num_remove', type=int, default= 4, help='num of instances removing')
+
+
+		self.parser.add_argument(	
+			'--mamba_flag', type=str, default= 'han cmatt to mamba', help='')
+		self.parser.add_argument(	
+			'--crossmodal', type=str, default= 'True', help='')
+
 
 	def parse(self):
 		if not self.initialized:
